@@ -1,0 +1,15 @@
+.env
+.env.local
+node_modules/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+data/index.faiss
+data/chunks.pkl
+data/latency_log.jsonl
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
