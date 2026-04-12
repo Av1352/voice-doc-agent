@@ -118,7 +118,8 @@ async def websocket_endpoint(websocket: WebSocket):
             # Send timings telemetry
             telemetry_message = {
                 "query": result["query"],
-                "timings": result["timings"]
+                "timings": result["timings"],
+                "response_text": result.get("response_text", "")
             }
             await websocket.send_text(json.dumps(telemetry_message))
             

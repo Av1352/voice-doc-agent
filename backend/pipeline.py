@@ -40,10 +40,12 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> dict:
     # 3. LLM and TTS Streaming Event Loop Integration
     first_sentence_ms = None
     all_audio_bytes = bytearray()
+    full_response = ""
     
     llm_start = time.perf_counter()
     
     for sentence in llm.stream_response(query, context_chunks):
+        full_response += sentence + " "
         
         # Tag precisely the point first sentence structure hits 
         if first_sentence_ms is None:
@@ -65,5 +67,6 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> dict:
     return {
         "query": query,
         "audio": bytes(all_audio_bytes),
-        "timings": timings
+        "timings": timings,
+        "response_text": full_response.strip()
     }

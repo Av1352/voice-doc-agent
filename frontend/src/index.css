@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
 :root {
   --bg-dark: #0a0a0f;
   --bg-panel: #14141a;
@@ -21,20 +23,12 @@ body {
   overflow: hidden;
 }
 
-h1, h2, h3, h4, fieldset, legend {
-  font-family: 'Inter', sans-serif;
-}
-
 .label {
   font-family: 'JetBrains Mono', monospace;
   color: var(--text-label);
   font-size: 0.8rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-}
-
-.accent {
-  color: var(--accent);
 }
 
 .app-container {
@@ -94,10 +88,12 @@ h1, h2, h3, h4, fieldset, legend {
   background: rgba(255, 255, 255, 0.02);
   display: block;
 }
+
 .dropzone:hover {
   border-color: var(--accent);
   background: rgba(6, 182, 212, 0.05);
 }
+
 .dropzone p {
   font-size: 0.9rem;
   color: var(--text-label);
@@ -115,11 +111,13 @@ h1, h2, h3, h4, fieldset, legend {
   gap: 12px;
   align-items: flex-start;
 }
+
 .step-num {
   font-family: 'JetBrains Mono', monospace;
   color: var(--accent);
   font-weight: 700;
 }
+
 .step-text {
   font-size: 0.9rem;
   line-height: 1.4;
@@ -141,10 +139,11 @@ h1, h2, h3, h4, fieldset, legend {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
+  gap: 20px;
   margin-bottom: 48px;
 }
 
+/* Mic button */
 .mic-button {
   width: 120px;
   height: 120px;
@@ -159,20 +158,23 @@ h1, h2, h3, h4, fieldset, legend {
   box-shadow: 0 0 30px rgba(6, 182, 212, 0.2);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
+  overflow: hidden;
 }
+
 .mic-button:hover:not(:disabled) {
   box-shadow: 0 0 40px rgba(6, 182, 212, 0.4);
   transform: scale(1.02);
 }
 
 .mic-button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   border-color: var(--text-label);
   cursor: not-allowed;
   box-shadow: none;
   color: var(--text-label);
 }
 
+/* Pulse rings when recording */
 .mic-button::before,
 .mic-button::after {
   content: '';
@@ -183,7 +185,7 @@ h1, h2, h3, h4, fieldset, legend {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  border: 1px solid var(--accent);
+  border: 2px solid var(--accent);
   opacity: 0;
   pointer-events: none;
 }
@@ -196,17 +198,41 @@ h1, h2, h3, h4, fieldset, legend {
 }
 
 .mic-button.recording::before {
-  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
 }
 
 .mic-button.recording::after {
-  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
-  animation-delay: 1s;
+  animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  animation-delay: 0.75s;
 }
 
 @keyframes pulse-ring {
-  0% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; border-width: 2px; }
-  100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; border-width: 0px; }
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.6;
+  }
+
+  100% {
+    transform: translate(-50%, -50%) scale(2);
+    opacity: 0;
+  }
+}
+
+/* Ripple on click */
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(0);
+  animation: ripple-out 0.6s linear;
+  pointer-events: none;
+}
+
+@keyframes ripple-out {
+  to {
+    transform: scale(2.5);
+    opacity: 0;
+  }
 }
 
 .mic-icon {
@@ -214,9 +240,56 @@ h1, h2, h3, h4, fieldset, legend {
   height: 48px;
 }
 
+/* Waveform bars when speaking */
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+}
+
+.wave-bar {
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: wave-bar 0.8s ease-in-out infinite alternate;
+  opacity: 0.85;
+}
+
+.wave-bar:nth-child(1) {
+  animation-duration: 0.7s;
+}
+
+.wave-bar:nth-child(2) {
+  animation-duration: 0.9s;
+}
+
+.wave-bar:nth-child(3) {
+  animation-duration: 0.6s;
+}
+
+.wave-bar:nth-child(4) {
+  animation-duration: 1.0s;
+}
+
+.wave-bar:nth-child(5) {
+  animation-duration: 0.75s;
+}
+
+@keyframes wave-bar {
+  from {
+    height: 6px;
+  }
+
+  to {
+    height: 32px;
+  }
+}
+
+/* Status + transcript */
 .status-display {
   text-align: center;
-  max-width: 600px;
+  max-width: 560px;
 }
 
 .status-text {
@@ -224,28 +297,92 @@ h1, h2, h3, h4, fieldset, legend {
   font-weight: 500;
   margin-bottom: 8px;
   min-height: 28px;
+  transition: color 0.3s;
 }
-.status-text.idle, .status-text.processing { color: var(--accent); }
-.status-text.error { color: #ef4444; }
-.status-text.success { color: #10b981; }
-.status-text.recording { 
-  color: #ef4444; 
-  animation: pulse-text 1.5s infinite; 
+
+.status-text.idle {
+  color: var(--accent);
+}
+
+.status-text.processing {
+  color: var(--accent);
+}
+
+.status-text.speaking {
+  color: var(--accent);
+}
+
+.status-text.success {
+  color: #10b981;
+}
+
+.status-text.error {
+  color: #ef4444;
+}
+
+.status-text.recording {
+  color: #ef4444;
+  animation: pulse-text 1.5s infinite;
 }
 
 @keyframes pulse-text {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .transcript {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   color: var(--text-main);
   font-style: italic;
   min-height: 24px;
+  margin-bottom: 8px;
 }
 
+.transcript.live {
+  color: var(--accent);
+  font-style: normal;
+  opacity: 0.85;
+}
+
+.ai-response {
+  margin-top: 12px;
+  padding: 16px 20px;
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.06) 0%, rgba(6, 182, 212, 0.02) 100%);
+  border-radius: 0 10px 10px 0;
+  font-size: 0.9rem;
+  color: #e2e8f0;
+  text-align: left;
+  max-height: 150px;
+  overflow-y: auto;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(6, 182, 212, 0.3) transparent;
+}
+
+.ai-response::-webkit-scrollbar {
+  width: 3px;
+}
+
+.ai-response::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ai-response::-webkit-scrollbar-thumb {
+  background: rgba(6, 182, 212, 0.3);
+  border-radius: 2px;
+}
+
+/* Latency grid */
 .latency-grid {
   position: absolute;
   bottom: 48px;
@@ -263,8 +400,9 @@ h1, h2, h3, h4, fieldset, legend {
   border-radius: 8px;
   padding: 16px;
   text-align: center;
-  transition: transform 0.2s ease, border-color 0.2s;
+  transition: transform 0.2s, border-color 0.2s;
 }
+
 .latency-card:hover {
   transform: translateY(-2px);
   border-color: rgba(6, 182, 212, 0.3);
@@ -276,4 +414,5 @@ h1, h2, h3, h4, fieldset, legend {
   font-weight: 700;
   color: var(--text-main);
   margin-top: 8px;
+  transition: color 0.3s;
 }

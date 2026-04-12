@@ -1,286 +1,366 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 
+const WS_URL = 'ws://localhost:8000/ws';
+const API_URL = 'http://localhost:8000';
+
 export default function App() {
-  const [status, setStatus] = useState("Ready");
+  const [status, setStatus] = useState("Upload a PDF to begin.");
   const [statusType, setStatusType] = useState("idle");
   const [documentLoaded, setDocumentLoaded] = useState(false);
   const [uploadedFilename, setUploadedFilename] = useState("");
   const [transcript, setTranscript] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [aiResponse, setAiResponse] = useState("");
   const [isRecording, setIsRecording] = useState(false);
-  const [latency, setLatency] = useState({
-    stt: '--',
-    vector: '--',
-    ttfs: '--',
-    total: '--'
-  });
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [latency, setLatency] = useState({ stt: '--', vector: '--', ttfs: '--', total: '--' });
 
   const ws = useRef(null);
   const mediaRecorder = useRef(null);
   const audioChunks = useRef([]);
-  const audioContext = useRef(null);
+  const audioCtx = useRef(null);
   const nextPlayTime = useRef(0);
+  const activeSources = useRef(0);
+  const recognition = useRef(null);
+  const micBtn = useRef(null);
+  const isRecordingRef = useRef(false);
+  const docLoadedRef = useRef(false);
 
   useEffect(() => {
-    connectWebSocket();
-    return () => {
-      if (ws.current) ws.current.close();
+    const btn = micBtn.current;
+    if (!btn) return;
+    const onTouchStart = (e) => {
+      e.preventDefault();
+      if (!docLoadedRef.current) return;
+      handleMouseDown({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
     };
-  }, []);
+    const onTouchEnd = (e) => {
+      e.preventDefault();
+      stopRecording();
+    };
+    btn.addEventListener('touchstart', onTouchStart, { passive: false });
+    btn.addEventListener('touchend', onTouchEnd, { passive: false });
+    return () => {
+      btn.removeEventListener('touchstart', onTouchStart);
+      btn.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [documentLoaded]);
+  useEffect(() => { docLoadedRef.current = documentLoaded; }, [documentLoaded]);
 
-  const connectWebSocket = () => {
-    ws.current = new WebSocket('ws://localhost:8000/ws');
-    
-    ws.current.onopen = () => {
-      console.log('WebSocket Connected');
-      setStatus("Connected. Upload PDF first.");
+  // ── WebSocket ────────────────────────────────────────────────────────────
+  const connect = useCallback(() => {
+    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
+    const socket = new WebSocket(WS_URL);
+    socket.binaryType = 'arraybuffer';
+
+    socket.onopen = () => {
+      setStatus(docLoadedRef.current ? "Ready. Hold mic to speak." : "Upload a PDF to begin.");
       setStatusType("idle");
     };
 
-    ws.current.onmessage = async (event) => {
-      if (typeof event.data === 'string') {
-        const msg = JSON.parse(event.data);
+    socket.onmessage = async (e) => {
+      if (typeof e.data === 'string') {
+        const msg = JSON.parse(e.data);
         if (msg.error) {
-          setStatusType("error");
-          setStatus("Error: " + msg.error);
+          setStatus(msg.error); setStatusType("error");
         } else if (msg.query) {
           setTranscript(`"${msg.query}"`);
+          if (msg.response_text) setAiResponse(msg.response_text);
           if (msg.timings) {
             setLatency({
-              stt: `${msg.timings.stt_ms.toFixed(0)}ms`,
-              vector: `${msg.timings.retrieval_ms.toFixed(0)}ms`,
-              ttfs: `${msg.timings.first_sentence_ms.toFixed(0)}ms`,
-              total: `${msg.timings.total_ms.toFixed(0)}ms`
+              stt: `${msg.timings.stt_ms?.toFixed(0)}ms`,
+              vector: `${msg.timings.retrieval_ms?.toFixed(0)}ms`,
+              ttfs: `${msg.timings.first_sentence_ms?.toFixed(0)}ms`,
+              total: `${msg.timings.total_ms?.toFixed(0)}ms`,
             });
           }
-          setStatusType("success");
-          setStatus("Ready for next question.");
+          setStatus("Ready for next question."); setStatusType("success");
         }
       } else {
-        // Blob data (Audio bytes)
-        const arrayBuffer = await event.data.arrayBuffer();
-        if (!audioContext.current) {
-          audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
+        // Binary audio
+        if (!audioCtx.current) {
+          audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
         }
         try {
-          const audioBuffer = await audioContext.current.decodeAudioData(arrayBuffer);
-          playAudioBuffer(audioBuffer);
-        } catch (e) {
-          console.error("Audio decoding error:", e);
+          const buf = await audioCtx.current.decodeAudioData(e.data.slice(0));
+          playBuffer(buf);
+        } catch (err) {
+          console.error("Audio decode error:", err);
         }
       }
     };
 
-    ws.current.onclose = () => {
-      setStatus("Disconnected. Reconnecting...");
-      setStatusType("error");
-      setTimeout(connectWebSocket, 3000);
+    socket.onclose = () => {
+      setStatus("Reconnecting…"); setStatusType("error");
+      setTimeout(connect, 3000);
+    };
+
+    ws.current = socket;
+  }, []);
+
+  useEffect(() => {
+    connect();
+    return () => ws.current?.close();
+  }, [connect]);
+
+  // ── Audio playback ───────────────────────────────────────────────────────
+  const playBuffer = (buffer) => {
+    const src = audioCtx.current.createBufferSource();
+    src.buffer = buffer;
+    src.connect(audioCtx.current.destination);
+    const now = audioCtx.current.currentTime;
+    if (nextPlayTime.current < now) nextPlayTime.current = now;
+    src.start(nextPlayTime.current);
+    nextPlayTime.current += buffer.duration;
+    activeSources.current += 1;
+    setIsSpeaking(true); setStatus("Speaking…"); setStatusType("speaking");
+    src.onended = () => {
+      activeSources.current = Math.max(0, activeSources.current - 1);
+      if (activeSources.current === 0) {
+        setIsSpeaking(false); setStatus("Ready for next question."); setStatusType("success");
+      }
     };
   };
 
-  const playAudioBuffer = (buffer) => {
-    const source = audioContext.current.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.current.destination);
-    
-    const currentTime = audioContext.current.currentTime;
-    if (nextPlayTime.current < currentTime) {
-      nextPlayTime.current = currentTime;
-    }
-    
-    source.start(nextPlayTime.current);
-    nextPlayTime.current += buffer.duration;
-  };
-
+  // ── Recording ────────────────────────────────────────────────────────────
   const startRecording = async () => {
-    if (status.includes('Disconnected') || status.includes('Reconnecting')) return;
+    if (!docLoadedRef.current) return;
+    if (ws.current?.readyState !== WebSocket.OPEN) return;
+
+    // Init audio context
+    if (!audioCtx.current) {
+      audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.current.state === 'suspended') await audioCtx.current.resume();
+
+    // Live transcript via Web Speech API — start BEFORE getUserMedia
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR) {
+      recognition.current = new SR();
+      recognition.current.continuous = true;
+      recognition.current.interimResults = true;
+      recognition.current.lang = 'en-US';
+      recognition.current.onresult = (ev) => {
+        let interim = '', final = '';
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          const t = ev.results[i][0].transcript;
+          ev.results[i].isFinal ? (final += t) : (interim += t);
+        }
+        setLiveTranscript(final || interim);
+      };
+      recognition.current.onerror = (ev) => console.warn("SR:", ev.error);
+      try { recognition.current.start(); } catch (_) { }
+    }
+
+    // Mic stream
     try {
-      if (!audioContext.current) {
-        audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      if (audioContext.current.state === 'suspended') {
-        await audioContext.current.resume();
-      }
-      
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder.current = new MediaRecorder(stream);
       audioChunks.current = [];
 
-      mediaRecorder.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunks.current.push(event.data);
-        }
+      mediaRecorder.current.ondataavailable = (ev) => {
+        if (ev.data.size > 0) audioChunks.current.push(ev.data);
       };
 
       mediaRecorder.current.onstop = () => {
-        const audioBlob = new Blob(audioChunks.current, { type: 'audio/webm' });
-        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-          ws.current.send(audioBlob);
-          setStatus("Processing audio...");
-          setStatusType("processing");
+        const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
+        if (ws.current?.readyState === WebSocket.OPEN) {
+          ws.current.send(blob);
+          setStatus("Processing…"); setStatusType("processing");
           setLatency({ stt: '--', vector: '--', ttfs: '--', total: '--' });
+          setAiResponse("");
         }
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(t => t.stop());
       };
 
       mediaRecorder.current.start();
       setIsRecording(true);
-      setStatus("Listening...");
-      setStatusType("recording");
-      setTranscript("");
+      setLiveTranscript(""); setTranscript("");
+      setStatus("Listening…"); setStatusType("recording");
     } catch (err) {
-      console.error("Error accessing microphone:", err);
-      setStatus("Microphone access denied");
-      setStatusType("error");
+      console.error(err);
+      setStatus("Microphone access denied."); setStatusType("error");
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorder.current && isRecording) {
+    if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
       mediaRecorder.current.stop();
-      setIsRecording(false);
     }
+    setIsRecording(false);
+    setLiveTranscript("");
+    try { recognition.current?.stop(); } catch (_) { }
+    recognition.current = null;
   };
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
+  // ── Ripple ───────────────────────────────────────────────────────────────
+  const handleMouseDown = (e) => {
+    if (!docLoadedRef.current) return;
+    const btn = micBtn.current;
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      const ripple = document.createElement('span');
+      ripple.className = 'ripple';
+      const size = Math.max(btn.offsetWidth, btn.offsetHeight);
+      ripple.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - rect.left - size / 2}px;top:${e.clientY - rect.top - size / 2}px`;
+      btn.appendChild(ripple);
+      ripple.addEventListener('animationend', () => ripple.remove());
+    }
+    startRecording();
+  };
+
+  // ── File upload ──────────────────────────────────────────────────────────
+  const handleUpload = async (e) => {
+    const file = e.target.files[0];
     if (!file) return;
-
-    setStatus(`Uploading ${file.name}...`);
-    setStatusType("processing");
-    const formData = new FormData();
-    formData.append("file", file);
-
+    setStatus(`Uploading ${file.name}…`); setStatusType("processing");
+    const fd = new FormData();
+    fd.append("file", file);
     try {
-      const response = await fetch("http://localhost:8000/upload-document", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await response.json();
-      if (response.ok && data.status === "indexed") {
-        setStatus(`Indexed ${data.chunk_count || 'document'} chunks successfully.`);
+      const res = await fetch(`${API_URL}/upload-document`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok && data.status === "indexed") {
+        setStatus(`Indexed ${data.chunk_count} chunks. Hold mic to speak.`);
         setStatusType("success");
         setDocumentLoaded(true);
         setUploadedFilename(file.name);
       } else {
-        setStatus(`Error: ${data.detail || data.message || 'Upload failed'}`);
-        setStatusType("error");
+        setStatus(data.detail || "Upload failed."); setStatusType("error");
       }
-    } catch (err) {
-      setStatus(`Failed to upload ${file.name}. Check backend connection.`);
-      setStatusType("error");
+    } catch {
+      setStatus(`Failed to upload ${file.name}.`); setStatusType("error");
     }
   };
 
-  const getLatencyColor = (valueStr, threshold) => {
-    if (valueStr === '--') return { color: 'var(--text-main)' };
-    const val = parseFloat(valueStr);
-    if (isNaN(val)) return { color: 'var(--text-main)' };
-    return val < threshold ? { color: '#10b981' } : { color: '#ef4444' };
+  // ── Latency color ────────────────────────────────────────────────────────
+  const latColor = (val, threshold) => {
+    if (val === '--') return {};
+    const n = parseFloat(val);
+    return isNaN(n) ? {} : { color: n < threshold ? '#10b981' : '#ef4444' };
   };
+
+  const displayText = isRecording && liveTranscript ? liveTranscript : transcript;
 
   return (
     <div className="app-container">
+
+      {/* ── Header ── */}
       <header className="header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: '700', letterSpacing: '-0.02em', margin: 0 }}>VoiceDoc AI</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h1 style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em', margin: 0 }}>
+            VoiceDoc AI
+          </h1>
           <span className="label" style={{ fontSize: '0.7rem' }}>/ VOICE AGENT</span>
         </div>
-        <div className="pill">Powered by Whisper + Claude + ElevenLabs</div>
+        <div className="pill">Whisper + Claude + ElevenLabs</div>
       </header>
 
       <div className="content">
+
+        {/* ── Sidebar ── */}
         <aside className="sidebar">
           <div>
-            <div className="label" style={{ marginBottom: '16px' }}>// DOCUMENT</div>
+            <div className="label" style={{ marginBottom: 16 }}>// DOCUMENT</div>
             <label className="dropzone">
-              <input 
-                type="file" 
-                accept="application/pdf" 
-                style={{ display: 'none' }} 
-                onChange={handleFileUpload} 
-              />
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: '0 auto', color: 'var(--accent)' }}>
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" y1="3" x2="12" y2="15"></line>
+              <input type="file" accept="application/pdf" style={{ display: 'none' }} onChange={handleUpload} />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                strokeLinecap="round" strokeLinejoin="round" style={{ margin: '0 auto', color: 'var(--accent)' }}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
               </svg>
               <p>Click to upload PDF</p>
             </label>
             {documentLoaded && (
-              <div style={{ marginTop: '16px', textAlign: 'center' }}>
-                <span className="pill" title={uploadedFilename} style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {uploadedFilename}
+              <div style={{ marginTop: 16, textAlign: 'center' }}>
+                <span className="pill" title={uploadedFilename}
+                  style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  ✓ {uploadedFilename}
                 </span>
               </div>
             )}
           </div>
 
           <div>
-            <div className="label" style={{ marginBottom: '16px' }}>// HOW IT WORKS</div>
+            <div className="label" style={{ marginBottom: 16 }}>// HOW IT WORKS</div>
             <div className="steps">
-              <div className="step">
-                <span className="step-num">01</span>
-                <span className="step-text">Upload a PDF document to be indexed in the vector database.</span>
-              </div>
-              <div className="step">
-                <span className="step-num">02</span>
-                <span className="step-text">Hold the microphone button and ask a question.</span>
-              </div>
-              <div className="step">
-                <span className="step-num">03</span>
-                <span className="step-text">AI synthesizes context and speaks the answer back.</span>
-              </div>
-              <div className="step">
-                <span className="step-num">04</span>
-                <span className="step-text">Monitor pipeline latencies in real-time.</span>
-              </div>
+              {[
+                'Upload a PDF to index in the vector database.',
+                'Hold the mic button and speak your question.',
+                'Claude retrieves context and speaks the answer.',
+                'Monitor latency across the full pipeline.',
+              ].map((text, i) => (
+                <div className="step" key={i}>
+                  <span className="step-num">{String(i + 1).padStart(2, '0')}</span>
+                  <span className="step-text">{text}</span>
+                </div>
+              ))}
             </div>
           </div>
         </aside>
 
+        {/* ── Main ── */}
         <main className="main-area">
           <div className="mic-container">
-            <button 
+
+            <button
+              ref={micBtn}
               className={`mic-button ${isRecording ? 'recording' : ''}`}
               disabled={!documentLoaded}
-              onMouseDown={startRecording}
+              onMouseDown={handleMouseDown}
               onMouseUp={stopRecording}
               onMouseLeave={stopRecording}
-              onTouchStart={(e) => { e.preventDefault(); if (!documentLoaded) return; startRecording(); }}
-              onTouchEnd={(e) => { e.preventDefault(); if (!documentLoaded) return; stopRecording(); }}
+
             >
-              <svg className="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                <line x1="12" y1="19" x2="12" y2="23"></line>
-                <line x1="8" y1="23" x2="16" y2="23"></line>
+              <svg className="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
               </svg>
             </button>
-            
+
+            {isSpeaking && (
+              <div className="waveform">
+                {[0.7, 0.9, 0.6, 1.0, 0.75].map((dur, i) => (
+                  <div key={i} className="wave-bar" style={{ animationDuration: `${dur}s` }} />
+                ))}
+              </div>
+            )}
+
             <div className="status-display">
               <div className={`status-text ${statusType}`}>{status}</div>
-              <div className="transcript">{transcript}</div>
+
+              {displayText && (
+                <div className={`transcript ${isRecording && liveTranscript ? 'live' : ''}`}>
+                  {displayText}
+                </div>
+              )}
+
+              {aiResponse && (
+                <div style={{ marginTop: 16, width: '100%', maxWidth: 480, textAlign: 'left' }}>
+                  <div className="label" style={{ fontSize: '0.65rem', marginBottom: 6 }}>// AI RESPONSE</div>
+                  <div className="ai-response">{aiResponse}</div>
+                </div>
+              )}
             </div>
           </div>
 
+          {/* ── Latency grid ── */}
           <div className="latency-grid">
-            <div className="latency-card">
-              <div className="label">STT Recognition</div>
-              <div className="latency-val" style={getLatencyColor(latency.stt, 500)}>{latency.stt}</div>
-            </div>
-            <div className="latency-card">
-              <div className="label">Vector Retrieval</div>
-              <div className="latency-val" style={getLatencyColor(latency.vector, 100)}>{latency.vector}</div>
-            </div>
-            <div className="latency-card">
-              <div className="label">TTFS First Audio</div>
-              <div className="latency-val" style={getLatencyColor(latency.ttfs, 1000)}>{latency.ttfs}</div>
-            </div>
-            <div className="latency-card">
-              <div className="label">Total Pipeline</div>
-              <div className="latency-val" style={getLatencyColor(latency.total, 2000)}>{latency.total}</div>
-            </div>
+            {[
+              { label: 'STT Recognition', val: latency.stt, threshold: 500 },
+              { label: 'Vector Retrieval', val: latency.vector, threshold: 100 },
+              { label: 'TTFS First Audio', val: latency.ttfs, threshold: 1000 },
+              { label: 'Total Pipeline', val: latency.total, threshold: 2000 },
+            ].map(({ label, val, threshold }) => (
+              <div className="latency-card" key={label}>
+                <div className="label">{label}</div>
+                <div className="latency-val" style={latColor(val, threshold)}>{val}</div>
+              </div>
+            ))}
           </div>
         </main>
       </div>
