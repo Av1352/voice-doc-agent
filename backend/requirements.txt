@@ -7,7 +7,7 @@ torch
 sentence-transformers
 faiss-cpu
 anthropic
-elevenlabs
 numpy
 pdfplumber
 ffmpeg-python
+elevenlabs

@@ -55,6 +55,7 @@ def stream_response(query: str, context_chunks: list[dict]) -> Generator[str, No
                     sentence = buffer[:end_idx].strip()
                     
                     if sentence:
+                        sentence = re.sub(r'[*#]', '', sentence).strip()
                         yield sentence
                         
                     # Advance the buffer past the detected boundary chunk
@@ -65,6 +66,7 @@ def stream_response(query: str, context_chunks: list[dict]) -> Generator[str, No
     # Once the stream completely wraps up, flush anything remaining in the buffer.
     remaining = buffer.strip()
     if remaining:
+        remaining = re.sub(r'[*#]', '', remaining).strip()
         yield remaining
 
 if __name__ == "__main__":

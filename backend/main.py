@@ -8,22 +8,23 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# Make absolutely sure that our imports work dynamically spanning the underlying project structure hierarchy
+# Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-# Load root .env files prior to loading SDK clients natively traversing globals
+# Load .env files
 load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 from backend import pipeline
 from document_processor import chunker
 from document_processor import embedder
+from document_processor import ingest
 
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
 
-# Maintain active inference structure bounds globally
+# Global state
 global_state = {
     "index": None,
     "chunks": None
@@ -31,7 +32,7 @@ global_state = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Retrieve indexed structure matrices asynchronously on fastAPI boot
+    # Load FAISS index and chunks on startup
     index_path = os.path.join(DATA_DIR, 'index.faiss')
     chunks_path = os.path.join(DATA_DIR, 'chunks.pkl')
     
@@ -55,7 +56,7 @@ async def lifespan(app: FastAPI):
     global_state["chunks"] = None
 
 
-# Configure central application execution contexts
+# Initialize FastAPI app
 app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
@@ -72,25 +73,12 @@ def health_check():
 
 @app.post("/upload-document")
 async def upload_document(file: UploadFile = File(...)):
-    """
-    Parses pdf contents, aligns table extractions/short text sequences seamlessly,
-    ingests content to vectors, and binds to active fastAPI inference global states.
-    """
-    os.makedirs(DATA_DIR, exist_ok=True)
-    temp_pdf_path = os.path.join(DATA_DIR, file.filename)
-    
+    """Parses PDF, vectors chunks, and sets global state."""
     try:
         content = await file.read()
-        with open(temp_pdf_path, "wb") as f:
-            f.write(content)
-            
-        print(f"Ingesting Uploaded PDF Structure Context: {file.filename}...")
-        chunks = chunker.process_pdf(temp_pdf_path)
+        index, chunks = ingest.process_document(content, file.filename)
         
-        print(f"Creating Semantic Extrapolations -> Build FAISS ({len(chunks)} chunks)...")
-        index = embedder.build_index(chunks)
-        
-        # Load the result payload context into inference memory hooks dynamically
+        # Update global state
         global_state["index"] = index
         global_state["chunks"] = chunks
         
@@ -101,35 +89,33 @@ async def upload_document(file: UploadFile = File(...)):
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
-    finally:
-        if os.path.exists(temp_pdf_path):
-            os.remove(temp_pdf_path)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    Bi-directional event loop WebSocket managing concurrent Whisper STT audio ingrains, 
-    FAISS Retrieval inferences, sequential Claude LLM bounds, and ElevenLabs TTS relays.
-    """
+    """Handles bi-directional WebSocket voice pipeline."""
     await websocket.accept()
-    print("Bi-directional Socket Session active bounds initialized...")
+    print("WebSocket connected")
     
     try:
         while True:
-            # Halt passively waiting for audio ingress bounds dynamically across connection
+            # Receive audio
             audio_bytes = await websocket.receive_bytes()
             
-            # Thread query resolution pipeline concurrently natively handling STT->Retrieval->LLM->TTS
+            if global_state["index"] is None:
+                await websocket.send_text(json.dumps({'error': 'No document loaded. Please upload a PDF first.'}))
+                continue
+            
+            # Process query pipeline
             result = await pipeline.process_voice_query(
                 audio_bytes, 
                 global_state["index"], 
                 global_state["chunks"]
             )
             
-            # Immediately burst concurrent audio payload chunks completely joined out
+            # Send resulting audio bytes
             await websocket.send_bytes(result["audio"])
             
-            # Propagate system processing metric states context trailing behind media byte transfers mapped
+            # Send timings telemetry
             telemetry_message = {
                 "query": result["query"],
                 "timings": result["timings"]
@@ -137,11 +123,11 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps(telemetry_message))
             
     except WebSocketDisconnect:
-        print("Bi-directional socket closed cleanly.")
+        print("WebSocket closed cleanly")
     except Exception as e:
-        print(f"Socket resolution error mapping broken bounds: {e}")
+        print(f"WebSocket error: {e}")
         try:
-             # Ensure failures transmit closure status context cleanly 
+             # Send error via websocket
              await websocket.send_text(json.dumps({"error": str(e)}))
              await websocket.close()
         except:

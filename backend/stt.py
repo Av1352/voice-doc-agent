@@ -14,13 +14,11 @@ def get_model():
     return _model
 
 def transcribe(audio_bytes: bytes, sample_rate: int = 16000) -> dict:
-    """
-    Converts incoming webm/opus audio bytes from the browser to 16kHz mono PCM float32 
-    in memory using ffmpeg-python, then passes it to OpenAI's Whisper model for transcription.
-    """
+    """Converts audio to float32 and transcribes using Whisper."""
+    
     start_time = time.perf_counter()
     
-    # 1. Convert webm/opus raw bytes via ffmpeg-python in memory (pipe)
+    # Convert audio via ffmpeg
     try:
         out, _ = (
             ffmpeg.input('pipe:0')
@@ -29,22 +27,22 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 16000) -> dict:
         )
     except ffmpeg.Error as e:
         print(f"FFmpeg decoding failure: {e.stderr.decode()}")
-        # Gracefully back out of the transaction returning empty structures
+        # Return empty on failure
         return {"text": "", "latency_ms": 0.0}
 
-    # The pipe safely mapped output directly out to f32le structure. We map right to numpy.
+    # Map output to numpy array
     audio_float32 = np.frombuffer(out, np.float32)
     
-    # 2. Transcribe the natively formatted audio
+    # Transcribe audio
     model = get_model()
     
-    # Whisper forces transcription to en 
+    # Force English logic
     result = model.transcribe(audio_float32, language='en')
     
     end_time = time.perf_counter()
     latency_ms = (end_time - start_time) * 1000.0
     
-    # 3. Return the transcription outcome and tracking latency
+    # Return text and latency
     return {
         "text": result.get("text", "").strip(),
         "latency_ms": latency_ms

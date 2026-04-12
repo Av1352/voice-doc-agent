@@ -2,10 +2,7 @@ import pdfplumber
 import os
 
 def format_table(table):
-    """
-    Formats a table (list of lists) into a readable list of key-value rows.
-    Assumes the first row contains headers.
-    """
+    """Formats table rows into pipe-separated key-value pairs."""
     if not table or len(table) < 2:
         return ""
     
@@ -18,7 +15,7 @@ def format_table(table):
     if len(cleaned_table) < 2:
         return ""
 
-    # Clean headers and handle missing column names
+    # Clean headers
     headers = []
     for i, h in enumerate(cleaned_table[0]):
         clean_header = str(h).strip().replace("\n", " ") if h is not None and str(h).strip() else f"Col_{i+1}"
@@ -41,14 +38,12 @@ def format_table(table):
     return "\n".join(formatted_rows)
 
 
-def chunk_text(text, max_length=500):
-    """
-    Splits text into paragraph blocks safely under max_length characters.
-    """
+def chunk_text(text, max_length=500, overlap=50):
+    """Splits text into chunks under max_length characters, with overlap."""
     if not text:
          return []
 
-    # Standardize newlines and split into paragraphs
+    # Split to paragraphs
     paragraphs = text.replace('\r\n', '\n').split('\n\n')
     chunks = []
     
@@ -60,22 +55,28 @@ def chunk_text(text, max_length=500):
         if len(p) <= max_length:
             chunks.append(p)
         else:
-            # Split overlong paragraphs by words to respect max_length
+            # Split long paragraphs by words
             words = p.split()
             current_chunk = []
             current_len = 0
             
             for word in words:
-                # Calculate added length, including a space if not the first word
+                # Calculate new chunk length
                 word_len = len(word) + (1 if current_len > 0 else 0)
                 if current_len + word_len <= max_length:
                     current_chunk.append(word)
                     current_len += word_len
                 else:
                     if current_chunk:
-                        chunks.append(" ".join(current_chunk))
-                    current_chunk = [word]
-                    current_len = len(word)
+                        chunk_str = " ".join(current_chunk)
+                        chunks.append(chunk_str)
+                        if overlap > 0 and len(chunk_str) >= overlap:
+                            overlap_str = chunk_str[-overlap:].strip()
+                            current_chunk = [overlap_str, word] if overlap_str else [word]
+                            current_len = len(" ".join(current_chunk))
+                        else:
+                            current_chunk = [word]
+                            current_len = len(word)
             
             if current_chunk:
                 chunks.append(" ".join(current_chunk))
@@ -83,10 +84,7 @@ def chunk_text(text, max_length=500):
     return chunks
 
 def process_pdf(pdf_path):
-    """
-    Extracts tables and text from a PDF per page using pdfplumber.
-    Returns a list of dicts with 'type', 'content', 'page', and 'source'.
-    """
+    """Extracts tables and text uniformly from a PDF."""
     results = []
     base_name = os.path.basename(pdf_path)
     
@@ -94,7 +92,7 @@ def process_pdf(pdf_path):
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
                 try:
-                    # 1. Extract and format tables
+                    # Extract tables
                     tables = page.extract_tables()
                     for table in tables:
                         formatted_table = format_table(table)
@@ -106,10 +104,10 @@ def process_pdf(pdf_path):
                                 "source": base_name
                             })
                     
-                    # 2. Extract and chunk text
+                    # Extract text
                     text = page.extract_text()
                     if text:
-                        text_chunks = chunk_text(text, max_length=500)
+                        text_chunks = chunk_text(text, max_length=500, overlap=50)
                         for chunk in text_chunks:
                             results.append({
                                 "type": "text",
@@ -119,7 +117,7 @@ def process_pdf(pdf_path):
                             })
 
                 except Exception as e:
-                    # Gracefully handle missing or unreadable objects on specific pages
+                    # Skip broken pages
                     print(f"Warning: Failed to process page {page_num} of {pdf_path}: {e}")
                     continue
                     
