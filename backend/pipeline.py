@@ -2,7 +2,8 @@ import os
 import sys
 import time
 import asyncio
-from typing import AsyncGenerator, Any, Dict
+import threading
+from typing import AsyncGenerator, Any, Dict, Optional
 
 # Ensure project root is fully registered under module scopes dynamically
 # Resolves cross-import bindings dynamically so python module paths succeed universally
@@ -39,36 +40,81 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
     timings["retrieval_ms"] = (time.perf_counter() - retrieval_start) * 1000.0
 
     # 3. LLM and TTS Streaming Event Loop Integration
-    first_sentence_ms = None
-    full_response_parts: list[str] = []
-    
-    llm_start = time.perf_counter()
-    
-    for sentence in llm.stream_response(query, context_chunks):
-        full_response_parts.append(sentence)
-        
-        # Tag precisely the point first sentence structure hits 
-        if first_sentence_ms is None:
-            first_sentence_ms = (time.perf_counter() - llm_start) * 1000.0
-            timings["first_sentence_ms"] = first_sentence_ms
-            
-        # Relay sentence chunks sequentially outwards to ElevenLabs TTS execution
-        for audio_chunk in tts.stream_audio(sentence):
-            yield {"type": "audio", "data": audio_chunk}
+    #
+    # IMPORTANT: llm.stream_response() and tts.stream_audio() are blocking generators.
+    # Running them on the event loop can stall ping/pong and get the connection killed
+    # by proxies. We run the blocking stream in a background thread and bridge results
+    # via an asyncio.Queue.
+    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=32)
+    loop = asyncio.get_running_loop()
 
-    if first_sentence_ms is None:
-        timings["first_sentence_ms"] = 0.0
-        
-    timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
-    
-    # Log timings safely externally executing latency_tracker writes 
-    await asyncio.to_thread(log_latency, query, timings)
+    def put_event(evt: Dict[str, Any]) -> None:
+        # Backpressure-safe: block in the worker thread until the event is enqueued.
+        asyncio.run_coroutine_threadsafe(queue.put(evt), loop).result()
 
-    yield {
-        "type": "final",
-        "query": query,
-        "response_text": " ".join(full_response_parts).strip(),
-        "timings": timings,
-    }
+    def worker() -> None:
+        first_sentence_ms_local: Optional[float] = None
+        full_response_parts_local: list[str] = []
+        llm_start = time.perf_counter()
+
+        try:
+            for sentence in llm.stream_response(query, context_chunks):
+                full_response_parts_local.append(sentence)
+
+                if first_sentence_ms_local is None:
+                    first_sentence_ms_local = (time.perf_counter() - llm_start) * 1000.0
+
+                for audio_chunk in tts.stream_audio(sentence):
+                    put_event({"type": "audio", "data": audio_chunk})
+
+            put_event(
+                {
+                    "type": "final",
+                    "query": query,
+                    "response_text": " ".join(full_response_parts_local).strip(),
+                    "first_sentence_ms": float(first_sentence_ms_local or 0.0),
+                }
+            )
+        except Exception as e:
+            put_event({"type": "error", "error": str(e)})
+
+    thread = threading.Thread(target=worker, name="llm_tts_stream", daemon=True)
+    thread.start()
+
+    while True:
+        event = await queue.get()
+
+        if event.get("type") == "audio":
+            yield event
+            continue
+
+        if event.get("type") == "error":
+            # Surface a final-ish event so the WS handler can respond.
+            timings["first_sentence_ms"] = timings.get("first_sentence_ms", 0.0)
+            timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
+            await asyncio.to_thread(log_latency, query, timings)
+            yield {
+                "type": "final",
+                "query": query,
+                "response_text": "",
+                "timings": timings,
+                "error": event.get("error", "Unknown error"),
+            }
+            break
+
+        if event.get("type") == "final":
+            timings["first_sentence_ms"] = float(event.get("first_sentence_ms", 0.0))
+            timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
+            await asyncio.to_thread(log_latency, query, timings)
+            yield {
+                "type": "final",
+                "query": event.get("query", query),
+                "response_text": event.get("response_text", ""),
+                "timings": timings,
+            }
+            break
+
+        # Ignore unknown event types to keep the stream resilient.
+        continue
     
     

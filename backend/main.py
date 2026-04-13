@@ -118,6 +118,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "query": event.get("query", ""),
                         "timings": event.get("timings", {}),
                         "response_text": event.get("response_text", ""),
+                        "error": event.get("error", ""),
                     }))
                 else:
                     # Ignore unknown event types to keep the socket robust
