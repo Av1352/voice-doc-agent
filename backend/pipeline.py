@@ -15,6 +15,7 @@ from backend import stt
 from backend import llm
 from backend import tts
 from backend.latency_tracker import log_latency
+from backend.memory import mem_event
 from document_processor import embedder as retrieval
 
 async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerator[Dict[str, Any], None]:
@@ -30,14 +31,18 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
 
     # 1. Speech to Text Analysis
     # Await via to_thread to keep asynchronous execution robust while the IO-bound whisper runs seamlessly
+    print(mem_event("pipeline:stt_start", bytes=len(audio_bytes)))
     stt_result = await asyncio.to_thread(stt.transcribe, audio_bytes)
     timings["stt_ms"] = stt_result.get("latency_ms", 0.0)
     query = stt_result.get("text", "")
+    print(mem_event("pipeline:stt_done", query_chars=len(query)))
 
     # 2. Vector Matrix Retrieval Execution
     retrieval_start = time.perf_counter()
+    print(mem_event("pipeline:retrieval_start"))
     context_chunks = await asyncio.to_thread(retrieval.retrieve, query, index, chunks)
     timings["retrieval_ms"] = (time.perf_counter() - retrieval_start) * 1000.0
+    print(mem_event("pipeline:retrieval_done", ctx=len(context_chunks) if context_chunks else 0))
 
     # 3. LLM and TTS Streaming Event Loop Integration
     #
@@ -103,6 +108,7 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
             break
 
         if event.get("type") == "final":
+            print(mem_event("pipeline:final_from_worker"))
             timings["first_sentence_ms"] = float(event.get("first_sentence_ms", 0.0))
             timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
             await asyncio.to_thread(log_latency, query, timings)

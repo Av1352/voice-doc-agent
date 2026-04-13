@@ -18,6 +18,7 @@ load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 from backend import pipeline
+from backend.memory import mem_event
 from document_processor import chunker
 from document_processor import embedder
 from document_processor import ingest
@@ -75,12 +76,16 @@ def health_check():
 async def upload_document(file: UploadFile = File(...)):
     """Parses PDF, vectors chunks, and sets global state."""
     try:
+        print(mem_event("upload_document:start", filename=file.filename))
         content = await file.read()
+        print(mem_event("upload_document:read_complete", bytes=len(content)))
         index, chunks = ingest.process_document(content, file.filename)
+        print(mem_event("upload_document:process_complete", chunks=len(chunks) if chunks else 0))
         
         # Update global state
         global_state["index"] = index
         global_state["chunks"] = chunks
+        print(mem_event("upload_document:state_set"))
         
         return {
             "status": "indexed",
@@ -95,11 +100,13 @@ async def websocket_endpoint(websocket: WebSocket):
     """Handles bi-directional WebSocket voice pipeline."""
     await websocket.accept()
     print("WebSocket connected")
+    print(mem_event("ws:accepted"))
     
     try:
         while True:
             # Receive audio
             audio_bytes = await websocket.receive_bytes()
+            print(mem_event("ws:received_audio", bytes=len(audio_bytes)))
             
             if global_state["index"] is None:
                 await websocket.send_text(json.dumps({'error': 'No document loaded. Please upload a PDF first.'}))
@@ -114,6 +121,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if event.get("type") == "audio":
                     await websocket.send_bytes(event["data"])
                 elif event.get("type") == "final":
+                    print(mem_event("ws:final_ready"))
                     await websocket.send_text(json.dumps({
                         "query": event.get("query", ""),
                         "timings": event.get("timings", {}),
