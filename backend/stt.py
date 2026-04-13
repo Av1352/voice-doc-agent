@@ -1,6 +1,6 @@
 import time
 import numpy as np
-import whisper
+from faster_whisper import WhisperModel
 import ffmpeg
 
 # Lazy-load the Whisper model so it only initializes once upon the first request
@@ -9,8 +9,8 @@ _model = None
 def get_model():
     global _model
     if _model is None:
-        print("Loading Whisper 'tiny' model. This might take a moment on the first run...")
-        _model = whisper.load_model("tiny")
+        print("Loading Whisper 'tiny' model (faster-whisper). This might take a moment on the first run...")
+        _model = WhisperModel("tiny", device="cpu", compute_type="int8")
     return _model
 
 def transcribe(audio_bytes: bytes, sample_rate: int = 16000) -> dict:
@@ -37,14 +37,15 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 16000) -> dict:
     model = get_model()
     
     # Force English logic
-    result = model.transcribe(audio_float32, language='en')
+    segments, _info = model.transcribe(audio_float32, language="en")
+    text = "".join(segment.text for segment in segments).strip()
     
     end_time = time.perf_counter()
     latency_ms = (end_time - start_time) * 1000.0
     
     # Return text and latency
     return {
-        "text": result.get("text", "").strip(),
+        "text": text,
         "latency_ms": latency_ms
     }
 
