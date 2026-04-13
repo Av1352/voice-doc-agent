@@ -6,6 +6,7 @@ faster-whisper
 fastembed
 faiss-cpu
 anthropic
+openai
 numpy
 pdfplumber
 ffmpeg-python

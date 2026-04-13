@@ -51,9 +51,22 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
     print(mem_event("pipeline:stt_start", bytes=len(audio_bytes)))
     stt_result = await asyncio.to_thread(stt.transcribe, audio_bytes)
     timings["stt_ms"] = stt_result.get("latency_ms", 0.0)
+    if stt_result.get("error"):
+        timings["retrieval_ms"] = 0.0
+        timings["first_sentence_ms"] = 0.0
+        timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
+        yield {
+            "type": "final",
+            "query": "",
+            "response_text": "",
+            "timings": timings,
+            "error": stt_result["error"],
+        }
+        return
     query = stt_result.get("text", "")
     print(mem_event("pipeline:stt_done", query_chars=len(query)))
-    stt.clear_model()
+    if stt.use_local_whisper():
+        stt.clear_model()
     print(mem_event("pipeline:stt_model_cleared"))
 
     # 2. Vector Matrix Retrieval Execution

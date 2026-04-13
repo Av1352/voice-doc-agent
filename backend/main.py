@@ -1,9 +1,10 @@
 import os
 import sys
-import gc
-import asyncio
 import json
 import pickle
+import tempfile
+import uuid
+import asyncio
 import faiss
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Response
@@ -22,10 +23,13 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 from backend import pipeline
 from backend.memory import mem_event
 from document_processor import chunker
-from document_processor import embedder
 from document_processor import ingest
 
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+
+# Max PDF upload size (bytes) — keeps 512MB Render instances from huge single allocations.
+MAX_PDF_UPLOAD_BYTES = int(os.environ.get("MAX_PDF_UPLOAD_MB", "10")) * 1024 * 1024
+READ_CHUNK_BYTES = 1024 * 1024
 
 # Global state
 global_state = {
@@ -33,18 +37,9 @@ global_state = {
     "chunks": None
 }
 
-def _warm_embed_cache() -> None:
-    """Download/load embedding weights once so PDF upload does not overlap cold HF fetch + high RSS."""
-    try:
-        m = embedder.get_model()
-        embedder.embed_texts(m, ["__warmup__"])
-    finally:
-        embedder.clear_model()
-        gc.collect()
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load FAISS index and chunks on startup
+    # Load FAISS index and chunks on startup only — no ML model warmups.
     index_path = os.path.join(DATA_DIR, 'index.faiss')
     chunks_path = os.path.join(DATA_DIR, 'chunks.pkl')
     
@@ -61,16 +56,6 @@ async def lifespan(app: FastAPI):
             global_state["index"], global_state["chunks"] = None, None
     else:
         print("No existing FAISS index located - active mode setup pending document POST ingress pipeline.")
-
-    # On Render, cold HF downloads during the first /upload-document often coincide with an open WebSocket
-    # and push RSS over the free limit → process killed mid-fetch. Warm the embedder once at boot instead.
-    if os.environ.get("RENDER") and os.environ.get("SKIP_EMBED_WARMUP", "").lower() not in ("1", "true", "yes"):
-        print("Render: warming embedding model (one-time download/cache; reduces upload-time OOM risk)...")
-        try:
-            await asyncio.to_thread(_warm_embed_cache)
-            print(mem_event("lifespan:embed_warmup_done"))
-        except Exception as e:
-            print(f"Embed warmup failed (non-fatal): {e}")
         
     yield
     
@@ -101,27 +86,45 @@ def health_check_head():
 @app.post("/upload-document")
 async def upload_document(file: UploadFile = File(...)):
     """Parses PDF, vectors chunks, and sets global state."""
+    safe_name = os.path.basename(file.filename or "document.pdf") or "document.pdf"
+    temp_path = os.path.join(tempfile.gettempdir(), f"vd-upload-{uuid.uuid4().hex}.pdf")
     try:
-        print(mem_event("upload_document:start", filename=file.filename))
-        content = await file.read()
-        print(mem_event("upload_document:read_complete", bytes=len(content)))
-        index, chunks = ingest.process_document(content, file.filename)
+        print(mem_event("upload_document:start", filename=safe_name))
+        total = 0
+        with open(temp_path, "wb") as out:
+            while True:
+                chunk = await file.read(READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_PDF_UPLOAD_BYTES:
+                    return {
+                        "status": "error",
+                        "message": f"PDF exceeds {MAX_PDF_UPLOAD_BYTES // (1024 * 1024)}MB limit.",
+                    }
+                out.write(chunk)
+        print(mem_event("upload_document:spooled_to_disk", bytes=total))
+
+        index, chunks = await asyncio.to_thread(ingest.process_document_path, temp_path, safe_name)
         print(mem_event("upload_document:process_complete", chunks=len(chunks) if chunks else 0))
-        # Keep memory low after index build (model can reload on first query).
-        embedder.clear_model()
-        
-        # Update global state
+
         global_state["index"] = index
         global_state["chunks"] = chunks
         print(mem_event("upload_document:state_set"))
-        
+
         return {
             "status": "indexed",
-            "filename": file.filename,
+            "filename": safe_name,
             "chunk_count": len(chunks)
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
