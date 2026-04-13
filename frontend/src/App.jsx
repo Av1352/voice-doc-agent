@@ -1,14 +1,41 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 
-function apiOrigin() {
-  const base = import.meta.env.VITE_API_ORIGIN || window.location.origin;
-  return String(base).replace(/\/$/, '');
+/** True when the page is almost certainly static hosting (no FastAPI / WebSocket). */
+function isStaticAppHost(hostname) {
+  return (
+    hostname.endsWith('.vercel.app') ||
+    hostname.endsWith('.netlify.app') ||
+    hostname.endsWith('.pages.dev') ||
+    hostname.endsWith('.github.io')
+  );
 }
 
-function wsUrl() {
-  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
-  const u = new URL(apiOrigin());
+/**
+ * Backend HTTP origin (Render, local dev, or same host as the UI).
+ * On Vercel/Netlify/etc. you MUST set VITE_API_ORIGIN to your API, e.g. https://xxx.onrender.com
+ */
+function resolveApiOrigin() {
+  const fromEnv = import.meta.env.VITE_API_ORIGIN?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  if (typeof window === 'undefined') return '';
+  const { hostname, protocol, host } = window.location;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return `${protocol}//${host}`.replace(/\/$/, '');
+  }
+  if (isStaticAppHost(hostname)) {
+    return '';
+  }
+  return window.location.origin.replace(/\/$/, '');
+}
+
+/** WebSocket URL for the voice pipeline. Override with VITE_WS_URL if needed. */
+function resolveWsUrl() {
+  const wsEnv = import.meta.env.VITE_WS_URL?.trim();
+  if (wsEnv) return wsEnv;
+  const api = resolveApiOrigin();
+  if (!api) return '';
+  const u = new URL(api);
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
   u.pathname = '/ws';
   u.search = '';
@@ -63,14 +90,42 @@ export default function App() {
   }, [documentLoaded]);
 
   // WebSocket
-  const connect = useCallback(() => {
+  const connect = useCallback((force = false) => {
+    if (force && ws.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+      try {
+        ws.current.onclose = null;
+        ws.current.onerror = null;
+        ws.current.onmessage = null;
+        ws.current.onopen = null;
+      } catch (_) { /* ignore */ }
+      try {
+        ws.current.close();
+      } catch (_) { /* ignore */ }
+      ws.current = null;
+    }
+
     if (ws.current && (
       ws.current.readyState === WebSocket.OPEN ||
       ws.current.readyState === WebSocket.CONNECTING
     )) return;
 
-    const socket = new WebSocket(wsUrl());
+    const url = resolveWsUrl();
+    if (!url) {
+      setStatus(
+        'Set VITE_API_ORIGIN in Vercel (Environment Variables) to your Render API URL, e.g. https://your-app.onrender.com — then redeploy. Static hosts cannot serve /ws.'
+      );
+      setStatusType('error');
+      return;
+    }
+
+    const socket = new WebSocket(url);
     socket.binaryType = 'arraybuffer';
+
+    socket.onerror = () => {
+      console.warn('WebSocket error (see Network tab); if the server just restarted, wait for reconnect.');
+    };
 
     socket.onopen = () => {
       retryCount.current = 0;
@@ -126,6 +181,9 @@ export default function App() {
     };
 
     socket.onclose = () => {
+      if (!resolveWsUrl()) {
+        return;
+      }
       retryCount.current += 1;
       // Exponential backoff: 3s, 6s, 10s, 15s, max 30s
       const delay = Math.min(3000 * Math.min(retryCount.current, 3), 30000);
@@ -249,17 +307,26 @@ export default function App() {
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const origin = resolveApiOrigin();
+    if (!origin) {
+      setStatus('Set VITE_API_ORIGIN in Vercel to your Render API URL, then redeploy.');
+      setStatusType('error');
+      return;
+    }
     setStatus(`Uploading ${file.name}…`); setStatusType("processing");
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const res = await fetch(`${apiOrigin()}/upload-document`, { method: "POST", body: fd });
+      const res = await fetch(`${origin}/upload-document`, { method: "POST", body: fd });
       const data = await res.json();
       if (res.ok && data.status === "indexed") {
         setStatus(`Indexed ${data.chunk_count} chunks. Hold mic to speak.`);
         setStatusType("success");
         setDocumentLoaded(true);
         setUploadedFilename(file.name);
+        // Render often restarts the dyno after a heavy index; the old socket is dead.
+        clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(() => connect(true), 1500);
       } else {
         setStatus(data.detail || "Upload failed."); setStatusType("error");
       }
