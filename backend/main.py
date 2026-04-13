@@ -1,5 +1,7 @@
 import os
 import sys
+import gc
+import asyncio
 import json
 import pickle
 import faiss
@@ -31,6 +33,15 @@ global_state = {
     "chunks": None
 }
 
+def _warm_embed_cache() -> None:
+    """Download/load embedding weights once so PDF upload does not overlap cold HF fetch + high RSS."""
+    try:
+        m = embedder.get_model()
+        embedder.embed_texts(m, ["__warmup__"])
+    finally:
+        embedder.clear_model()
+        gc.collect()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load FAISS index and chunks on startup
@@ -50,6 +61,16 @@ async def lifespan(app: FastAPI):
             global_state["index"], global_state["chunks"] = None, None
     else:
         print("No existing FAISS index located - active mode setup pending document POST ingress pipeline.")
+
+    # On Render, cold HF downloads during the first /upload-document often coincide with an open WebSocket
+    # and push RSS over the free limit → process killed mid-fetch. Warm the embedder once at boot instead.
+    if os.environ.get("RENDER") and os.environ.get("SKIP_EMBED_WARMUP", "").lower() not in ("1", "true", "yes"):
+        print("Render: warming embedding model (one-time download/cache; reduces upload-time OOM risk)...")
+        try:
+            await asyncio.to_thread(_warm_embed_cache)
+            print(mem_event("lifespan:embed_warmup_done"))
+        except Exception as e:
+            print(f"Embed warmup failed (non-fatal): {e}")
         
     yield
     

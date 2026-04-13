@@ -8,7 +8,7 @@ def retrieve(query: str, index, chunks, top_k: int = 4) -> list[dict]:
 
     model = get_model()
 
-    q_vec = embed_texts(model, [f"query: {query}"])
+    q_vec = embed_texts(model, [query])
 
     faiss.normalize_L2(q_vec)
 

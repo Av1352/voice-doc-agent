@@ -5,7 +5,8 @@ import faiss
 import numpy as np
 from fastembed import TextEmbedding
 
-MODEL_NAME = "BAAI/bge-small-en-v1.5"
+# MiniLM ONNX is ~0.09 GB vs larger BGE models; fits 512MB Render dynos better during cold HF fetch + encode.
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 
 # Lazy load the model globally to avoid reloading on each retrieve call
@@ -53,8 +54,7 @@ def build_index(chunks):
     model = get_model()
 
     print(f"Encoding {len(chunks)} chunks...")
-    # BGE retrieval: passage prefix for indexed documents
-    texts = [f"passage: {chunk.get('content', '')}" for chunk in chunks]
+    texts = [chunk.get("content", "") for chunk in chunks]
 
     embeddings = embed_texts(model, texts)
 
@@ -90,8 +90,7 @@ def retrieve(query, index, chunks, top_k=4):
     """
     model = get_model()
 
-    # BGE retrieval: query prefix for search
-    query_embedding = embed_texts(model, [f"query: {query}"])
+    query_embedding = embed_texts(model, [query])
 
     # L2 normalize the query vector in place
     faiss.normalize_L2(query_embedding)
