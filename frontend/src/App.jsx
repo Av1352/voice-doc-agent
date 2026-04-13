@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 
-const WS_URL = 'ws://localhost:8000/ws';
-const API_URL = 'http://localhost:8000';
+const WS_URL = 'wss://voice-doc-agent.onrender.com/ws';
+const API_URL = 'https://voice-doc-agent.onrender.com';
 
 export default function App() {
   const [status, setStatus] = useState("Upload a PDF to begin.");
