@@ -81,6 +81,8 @@ async def upload_document(file: UploadFile = File(...)):
         print(mem_event("upload_document:read_complete", bytes=len(content)))
         index, chunks = ingest.process_document(content, file.filename)
         print(mem_event("upload_document:process_complete", chunks=len(chunks) if chunks else 0))
+        # Keep memory low after index build (model can reload on first query).
+        embedder.clear_model()
         
         # Update global state
         global_state["index"] = index

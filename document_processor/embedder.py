@@ -1,5 +1,6 @@
 import os
 import pickle
+import gc
 import faiss
 import numpy as np
 from fastembed import TextEmbedding
@@ -10,10 +11,23 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # Lazy load the model globally to avoid reloading on each retrieve call
 _model = None
 
+def clear_model():
+    """Frees the embedding model to reduce RSS on low-memory hosts."""
+    global _model
+    _model = None
+    gc.collect()
+
 def get_model():
     global _model
     if _model is None:
-        _model = TextEmbedding(MODEL_NAME)
+        # Render (and similar) often logs GPU probing; disable it and keep ORT minimal.
+        _model = TextEmbedding(
+            MODEL_NAME,
+            providers=["CPUExecutionProvider"],
+            threads=1,
+            cuda=False,
+            lazy_load=True,
+        )
     return _model
 
 def embed_texts(model, texts: list[str]) -> np.ndarray:
@@ -65,6 +79,8 @@ def build_index(chunks):
         pickle.dump(chunks, f)
 
     print("Index built and saved successfully.")
+    # Release the model after indexing to keep headroom for STT/LLM/TTS.
+    clear_model()
     return index
 
 def retrieve(query, index, chunks, top_k=4):
