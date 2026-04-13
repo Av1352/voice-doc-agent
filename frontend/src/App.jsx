@@ -5,7 +5,7 @@ const WS_URL = 'wss://voice-doc-agent.onrender.com/ws';
 const API_URL = 'https://voice-doc-agent.onrender.com';
 
 export default function App() {
-  const [status, setStatus] = useState("Upload a PDF to begin.");
+  const [status, setStatus] = useState("Connecting to server...");
   const [statusType, setStatusType] = useState("idle");
   const [documentLoaded, setDocumentLoaded] = useState(false);
   const [uploadedFilename, setUploadedFilename] = useState("");
@@ -24,9 +24,13 @@ export default function App() {
   const activeSources = useRef(0);
   const recognition = useRef(null);
   const micBtn = useRef(null);
-  const isRecordingRef = useRef(false);
   const docLoadedRef = useRef(false);
+  const retryCount = useRef(0);
+  const retryTimer = useRef(null);
 
+  useEffect(() => { docLoadedRef.current = documentLoaded; }, [documentLoaded]);
+
+  // Touch events
   useEffect(() => {
     const btn = micBtn.current;
     if (!btn) return;
@@ -35,10 +39,7 @@ export default function App() {
       if (!docLoadedRef.current) return;
       handleMouseDown({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY });
     };
-    const onTouchEnd = (e) => {
-      e.preventDefault();
-      stopRecording();
-    };
+    const onTouchEnd = (e) => { e.preventDefault(); stopRecording(); };
     btn.addEventListener('touchstart', onTouchStart, { passive: false });
     btn.addEventListener('touchend', onTouchEnd, { passive: false });
     return () => {
@@ -46,15 +47,19 @@ export default function App() {
       btn.removeEventListener('touchend', onTouchEnd);
     };
   }, [documentLoaded]);
-  useEffect(() => { docLoadedRef.current = documentLoaded; }, [documentLoaded]);
 
-  // ── WebSocket ────────────────────────────────────────────────────────────
+  // WebSocket
   const connect = useCallback(() => {
-    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) return;
+    if (ws.current && (
+      ws.current.readyState === WebSocket.OPEN ||
+      ws.current.readyState === WebSocket.CONNECTING
+    )) return;
+
     const socket = new WebSocket(WS_URL);
     socket.binaryType = 'arraybuffer';
 
     socket.onopen = () => {
+      retryCount.current = 0;
       setStatus(docLoadedRef.current ? "Ready. Hold mic to speak." : "Upload a PDF to begin.");
       setStatusType("idle");
     };
@@ -78,7 +83,6 @@ export default function App() {
           setStatus("Ready for next question."); setStatusType("success");
         }
       } else {
-        // Binary audio
         if (!audioCtx.current) {
           audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
         }
@@ -92,8 +96,12 @@ export default function App() {
     };
 
     socket.onclose = () => {
-      setStatus("Reconnecting…"); setStatusType("error");
-      setTimeout(connect, 3000);
+      retryCount.current += 1;
+      // Exponential backoff: 3s, 6s, 10s, 15s, max 30s
+      const delay = Math.min(3000 * Math.min(retryCount.current, 3), 30000);
+      setStatus(`Server waking up… retrying in ${Math.round(delay / 1000)}s`);
+      setStatusType("error");
+      retryTimer.current = setTimeout(connect, delay);
     };
 
     ws.current = socket;
@@ -101,10 +109,13 @@ export default function App() {
 
   useEffect(() => {
     connect();
-    return () => ws.current?.close();
+    return () => {
+      clearTimeout(retryTimer.current);
+      ws.current?.close();
+    };
   }, [connect]);
 
-  // ── Audio playback ───────────────────────────────────────────────────────
+  // Audio playback
   const playBuffer = (buffer) => {
     const src = audioCtx.current.createBufferSource();
     src.buffer = buffer;
@@ -123,18 +134,18 @@ export default function App() {
     };
   };
 
-  // ── Recording ────────────────────────────────────────────────────────────
+  // Recording
   const startRecording = async () => {
     if (!docLoadedRef.current) return;
-    if (ws.current?.readyState !== WebSocket.OPEN) return;
-
-    // Init audio context
+    if (ws.current?.readyState !== WebSocket.OPEN) {
+      setStatus("Not connected. Wait for server to wake up."); setStatusType("error");
+      return;
+    }
     if (!audioCtx.current) {
       audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (audioCtx.current.state === 'suspended') await audioCtx.current.resume();
 
-    // Live transcript via Web Speech API — start BEFORE getUserMedia
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SR) {
       recognition.current = new SR();
@@ -153,16 +164,13 @@ export default function App() {
       try { recognition.current.start(); } catch (_) { }
     }
 
-    // Mic stream
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder.current = new MediaRecorder(stream);
       audioChunks.current = [];
-
       mediaRecorder.current.ondataavailable = (ev) => {
         if (ev.data.size > 0) audioChunks.current.push(ev.data);
       };
-
       mediaRecorder.current.onstop = () => {
         const blob = new Blob(audioChunks.current, { type: 'audio/webm' });
         if (ws.current?.readyState === WebSocket.OPEN) {
@@ -173,7 +181,6 @@ export default function App() {
         }
         stream.getTracks().forEach(t => t.stop());
       };
-
       mediaRecorder.current.start();
       setIsRecording(true);
       setLiveTranscript(""); setTranscript("");
@@ -194,7 +201,6 @@ export default function App() {
     recognition.current = null;
   };
 
-  // ── Ripple ───────────────────────────────────────────────────────────────
   const handleMouseDown = (e) => {
     if (!docLoadedRef.current) return;
     const btn = micBtn.current;
@@ -210,7 +216,6 @@ export default function App() {
     startRecording();
   };
 
-  // ── File upload ──────────────────────────────────────────────────────────
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -233,7 +238,6 @@ export default function App() {
     }
   };
 
-  // ── Latency color ────────────────────────────────────────────────────────
   const latColor = (val, threshold) => {
     if (val === '--') return {};
     const n = parseFloat(val);
@@ -244,21 +248,15 @@ export default function App() {
 
   return (
     <div className="app-container">
-
-      {/* ── Header ── */}
       <header className="header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h1 style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em', margin: 0 }}>
-            VoiceDoc AI
-          </h1>
+          <h1 style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em', margin: 0 }}>VoiceDoc AI</h1>
           <span className="label" style={{ fontSize: '0.7rem' }}>/ VOICE AGENT</span>
         </div>
         <div className="pill">Whisper + Claude + ElevenLabs</div>
       </header>
 
       <div className="content">
-
-        {/* ── Sidebar ── */}
         <aside className="sidebar">
           <div>
             <div className="label" style={{ marginBottom: 16 }}>// DOCUMENT</div>
@@ -281,7 +279,6 @@ export default function App() {
               </div>
             )}
           </div>
-
           <div>
             <div className="label" style={{ marginBottom: 16 }}>// HOW IT WORKS</div>
             <div className="steps">
@@ -300,10 +297,8 @@ export default function App() {
           </div>
         </aside>
 
-        {/* ── Main ── */}
         <main className="main-area">
           <div className="mic-container">
-
             <button
               ref={micBtn}
               className={`mic-button ${isRecording ? 'recording' : ''}`}
@@ -311,7 +306,6 @@ export default function App() {
               onMouseDown={handleMouseDown}
               onMouseUp={stopRecording}
               onMouseLeave={stopRecording}
-
             >
               <svg className="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                 strokeLinecap="round" strokeLinejoin="round">
@@ -332,13 +326,11 @@ export default function App() {
 
             <div className="status-display">
               <div className={`status-text ${statusType}`}>{status}</div>
-
               {displayText && (
                 <div className={`transcript ${isRecording && liveTranscript ? 'live' : ''}`}>
                   {displayText}
                 </div>
               )}
-
               {aiResponse && (
                 <div style={{ marginTop: 16, width: '100%', maxWidth: 480, textAlign: 'left' }}>
                   <div className="label" style={{ fontSize: '0.65rem', marginBottom: 6 }}>// AI RESPONSE</div>
@@ -348,7 +340,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── Latency grid ── */}
           <div className="latency-grid">
             {[
               { label: 'STT Recognition', val: latency.stt, threshold: 500 },
