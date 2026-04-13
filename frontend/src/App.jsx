@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 
-const WS_URL = 'wss://voice-doc-agent.onrender.com/ws';
-const API_URL = 'https://voice-doc-agent.onrender.com';
+function apiOrigin() {
+  const base = import.meta.env.VITE_API_ORIGIN || window.location.origin;
+  return String(base).replace(/\/$/, '');
+}
+
+function wsUrl() {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+  const u = new URL(apiOrigin());
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  u.pathname = '/ws';
+  u.search = '';
+  u.hash = '';
+  return u.toString();
+}
 
 export default function App() {
   const [status, setStatus] = useState("Connecting to server...");
@@ -27,6 +39,8 @@ export default function App() {
   const docLoadedRef = useRef(false);
   const retryCount = useRef(0);
   const retryTimer = useRef(null);
+  /** @type {React.MutableRefObject<ArrayBuffer[]>} */
+  const pendingAudioParts = useRef([]);
 
   useEffect(() => { docLoadedRef.current = documentLoaded; }, [documentLoaded]);
 
@@ -55,11 +69,12 @@ export default function App() {
       ws.current.readyState === WebSocket.CONNECTING
     )) return;
 
-    const socket = new WebSocket(WS_URL);
+    const socket = new WebSocket(wsUrl());
     socket.binaryType = 'arraybuffer';
 
     socket.onopen = () => {
       retryCount.current = 0;
+      pendingAudioParts.current = [];
       setStatus(docLoadedRef.current ? "Ready. Hold mic to speak." : "Upload a PDF to begin.");
       setStatusType("idle");
     };
@@ -67,10 +82,33 @@ export default function App() {
     socket.onmessage = async (e) => {
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data);
+        // ElevenLabs streams MP3 chunks; decode once after all binary parts arrived.
+        const parts = pendingAudioParts.current;
+        pendingAudioParts.current = [];
+        if (parts.length) {
+          if (!audioCtx.current) {
+            audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          try {
+            const total = parts.reduce((sum, ab) => sum + ab.byteLength, 0);
+            const merged = new Uint8Array(total);
+            let offset = 0;
+            for (const ab of parts) {
+              merged.set(new Uint8Array(ab), offset);
+              offset += ab.byteLength;
+            }
+            const buf = await audioCtx.current.decodeAudioData(
+              merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)
+            );
+            playBuffer(buf);
+          } catch (err) {
+            console.error("Audio decode error:", err);
+          }
+        }
         if (msg.error) {
           setStatus(msg.error); setStatusType("error");
-        } else if (msg.query) {
-          setTranscript(`"${msg.query}"`);
+        } else if (msg.query !== undefined) {
+          setTranscript(msg.query ? `"${msg.query}"` : '');
           if (msg.response_text) setAiResponse(msg.response_text);
           if (msg.timings) {
             setLatency({
@@ -83,15 +121,7 @@ export default function App() {
           setStatus("Ready for next question."); setStatusType("success");
         }
       } else {
-        if (!audioCtx.current) {
-          audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
-        }
-        try {
-          const buf = await audioCtx.current.decodeAudioData(e.data.slice(0));
-          playBuffer(buf);
-        } catch (err) {
-          console.error("Audio decode error:", err);
-        }
+        pendingAudioParts.current.push(e.data);
       }
     };
 
@@ -223,7 +253,7 @@ export default function App() {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const res = await fetch(`${API_URL}/upload-document`, { method: "POST", body: fd });
+      const res = await fetch(`${apiOrigin()}/upload-document`, { method: "POST", body: fd });
       const data = await res.json();
       if (res.ok && data.status === "indexed") {
         setStatus(`Indexed ${data.chunk_count} chunks. Hold mic to speak.`);

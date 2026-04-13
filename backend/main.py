@@ -4,7 +4,7 @@ import json
 import pickle
 import faiss
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -40,7 +40,8 @@ async def lifespan(app: FastAPI):
     if os.path.exists(index_path) and os.path.exists(chunks_path):
         print("Loading existing FAISS index and chunk boundaries from disk memory...")
         try:
-            global_state["index"] = faiss.read_index(index_path)
+            mmap_flags = faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY
+            global_state["index"] = faiss.read_index(index_path, mmap_flags)
             with open(chunks_path, 'rb') as f:
                 global_state["chunks"] = pickle.load(f)
             print(f"Persisted successfully: Loaded {len(global_state['chunks'])} document chunks.")
@@ -71,6 +72,10 @@ app.add_middleware(
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.head("/health")
+def health_check_head():
+    return Response(status_code=200)
 
 @app.post("/upload-document")
 async def upload_document(file: UploadFile = File(...)):

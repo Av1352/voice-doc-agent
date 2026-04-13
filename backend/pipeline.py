@@ -18,6 +18,9 @@ from backend.latency_tracker import log_latency
 from backend.memory import mem_event
 from document_processor import embedder as retrieval
 
+# Guard against huge blobs (ffmpeg + float32 decode would spike RSS).
+MAX_INCOMING_AUDIO_BYTES = 5 * 1024 * 1024
+
 async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Orchestrates the entire voice end-to-end pipeline handling conversion telemetry tracking:
@@ -29,6 +32,20 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
     total_start = time.perf_counter()
     timings = {}
 
+    if len(audio_bytes) > MAX_INCOMING_AUDIO_BYTES:
+        timings["stt_ms"] = 0.0
+        timings["retrieval_ms"] = 0.0
+        timings["first_sentence_ms"] = 0.0
+        timings["total_ms"] = (time.perf_counter() - total_start) * 1000.0
+        yield {
+            "type": "final",
+            "query": "",
+            "response_text": "",
+            "timings": timings,
+            "error": f"Audio exceeds {MAX_INCOMING_AUDIO_BYTES // (1024 * 1024)}MB limit.",
+        }
+        return
+
     # 1. Speech to Text Analysis
     # Await via to_thread to keep asynchronous execution robust while the IO-bound whisper runs seamlessly
     print(mem_event("pipeline:stt_start", bytes=len(audio_bytes)))
@@ -36,6 +53,8 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
     timings["stt_ms"] = stt_result.get("latency_ms", 0.0)
     query = stt_result.get("text", "")
     print(mem_event("pipeline:stt_done", query_chars=len(query)))
+    stt.clear_model()
+    print(mem_event("pipeline:stt_model_cleared"))
 
     # 2. Vector Matrix Retrieval Execution
     retrieval_start = time.perf_counter()
@@ -43,6 +62,8 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerat
     context_chunks = await asyncio.to_thread(retrieval.retrieve, query, index, chunks)
     timings["retrieval_ms"] = (time.perf_counter() - retrieval_start) * 1000.0
     print(mem_event("pipeline:retrieval_done", ctx=len(context_chunks) if context_chunks else 0))
+    retrieval.clear_model()
+    print(mem_event("pipeline:embed_model_cleared"))
 
     # 3. LLM and TTS Streaming Event Loop Integration
     #

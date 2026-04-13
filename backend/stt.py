@@ -1,3 +1,4 @@
+import gc
 import time
 import numpy as np
 from faster_whisper import WhisperModel
@@ -5,6 +6,12 @@ import ffmpeg
 
 # Lazy-load the Whisper model so it only initializes once upon the first request
 _model = None
+
+def clear_model():
+    """Drop the Whisper model to free RSS (avoid stacking with embedding / ORT)."""
+    global _model
+    _model = None
+    gc.collect()
 
 def get_model():
     global _model
