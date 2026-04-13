@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import asyncio
+from typing import AsyncGenerator, Any, Dict
 
 # Ensure project root is fully registered under module scopes dynamically
 # Resolves cross-import bindings dynamically so python module paths succeed universally
@@ -15,7 +16,7 @@ from backend import tts
 from backend.latency_tracker import log_latency
 from document_processor import embedder as retrieval
 
-async def process_voice_query(audio_bytes: bytes, index, chunks) -> dict:
+async def process_voice_query(audio_bytes: bytes, index, chunks) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Orchestrates the entire voice end-to-end pipeline handling conversion telemetry tracking:
     1. STT inference
@@ -39,22 +40,21 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> dict:
 
     # 3. LLM and TTS Streaming Event Loop Integration
     first_sentence_ms = None
-    all_audio_bytes = bytearray()
-    full_response = ""
+    full_response_parts: list[str] = []
     
     llm_start = time.perf_counter()
     
     for sentence in llm.stream_response(query, context_chunks):
-        full_response += sentence + " "
+        full_response_parts.append(sentence)
         
         # Tag precisely the point first sentence structure hits 
         if first_sentence_ms is None:
             first_sentence_ms = (time.perf_counter() - llm_start) * 1000.0
             timings["first_sentence_ms"] = first_sentence_ms
             
-        # Relay sentence chunks sequentially outwards to ElevenLabs TTS execution 
+        # Relay sentence chunks sequentially outwards to ElevenLabs TTS execution
         for audio_chunk in tts.stream_audio(sentence):
-            all_audio_bytes.extend(audio_chunk)
+            yield {"type": "audio", "data": audio_chunk}
 
     if first_sentence_ms is None:
         timings["first_sentence_ms"] = 0.0
@@ -64,9 +64,11 @@ async def process_voice_query(audio_bytes: bytes, index, chunks) -> dict:
     # Log timings safely externally executing latency_tracker writes 
     await asyncio.to_thread(log_latency, query, timings)
 
-    return {
+    yield {
+        "type": "final",
         "query": query,
-        "audio": bytes(all_audio_bytes),
+        "response_text": " ".join(full_response_parts).strip(),
         "timings": timings,
-        "response_text": full_response.strip()
     }
+    
+    

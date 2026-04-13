@@ -105,23 +105,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_text(json.dumps({'error': 'No document loaded. Please upload a PDF first.'}))
                 continue
             
-            # Process query pipeline
-            result = await pipeline.process_voice_query(
-                audio_bytes, 
-                global_state["index"], 
-                global_state["chunks"]
-            )
-            
-            # Send resulting audio bytes
-            await websocket.send_bytes(result["audio"])
-            
-            # Send timings telemetry
-            telemetry_message = {
-                "query": result["query"],
-                "timings": result["timings"],
-                "response_text": result.get("response_text", "")
-            }
-            await websocket.send_text(json.dumps(telemetry_message))
+            # Stream query pipeline (no RAM accumulation)
+            async for event in pipeline.process_voice_query(
+                audio_bytes,
+                global_state["index"],
+                global_state["chunks"],
+            ):
+                if event.get("type") == "audio":
+                    await websocket.send_bytes(event["data"])
+                elif event.get("type") == "final":
+                    await websocket.send_text(json.dumps({
+                        "query": event.get("query", ""),
+                        "timings": event.get("timings", {}),
+                        "response_text": event.get("response_text", ""),
+                    }))
+                else:
+                    # Ignore unknown event types to keep the socket robust
+                    continue
             
     except WebSocketDisconnect:
         print("WebSocket closed cleanly")
