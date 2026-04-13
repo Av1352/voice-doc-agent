@@ -3,7 +3,7 @@ uvicorn
 python-multipart
 python-dotenv
 faster-whisper
-sentence-transformers
+fastembed
 faiss-cpu
 anthropic
 numpy
