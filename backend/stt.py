@@ -9,8 +9,8 @@ _model = None
 def get_model():
     global _model
     if _model is None:
-        print("Loading Whisper 'base' model. This might take a moment on the first run...")
-        _model = whisper.load_model("base")
+        print("Loading Whisper 'tiny' model. This might take a moment on the first run...")
+        _model = whisper.load_model("tiny")
     return _model
 
 def transcribe(audio_bytes: bytes, sample_rate: int = 16000) -> dict:
