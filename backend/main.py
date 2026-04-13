@@ -128,8 +128,13 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket error: {e}")
         try:
-             # Send error via websocket
-             await websocket.send_text(json.dumps({"error": str(e)}))
-             await websocket.close()
+            # Send error via websocket
+            await websocket.send_text(json.dumps({"error": str(e)}))
+            await websocket.close()
         except:
-             pass
+            pass
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
